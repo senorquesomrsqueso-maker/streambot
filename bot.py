@@ -182,33 +182,33 @@ async def on_ready():
         print(f"Detalles del error: {e}")
         print("⚠️ El bot seguirá funcionando en Discord, pero las funciones de la base de datos fallarán hasta arreglar el enlace de conexión.\n")
 
-# NUEVO COMANDO SLASH (/)
-@bot.tree.command(name="register", description="Enlaza tu cuenta de TikTok con tu usuario de Discord")
-@app_commands.describe(tiktok_username="Escribe tu nombre de usuario de TikTok (sin el @)")
+@bot.tree.command(name="register", description="Enlaza tu cuenta de TikTok")
 async def register(interaction: discord.Interaction, tiktok_username: str):
-    username_clean = tiktok_username.replace("@", "").strip()
-    
     try:
-        # 1. Guardamos en DB
+        # Aquí va tu lógica actual
+        username_clean = tiktok_username.replace("@", "").strip()
+        
+        # FORZAMOS UNA RESPUESTA INMEDIATA (Para que Discord no marque timeout)
+        await interaction.response.defer(ephemeral=True) 
+        
+        # Tu lógica de base de datos
         await streamers_col.update_one(
-            {"username": username_clean},
-            {"$set": {"username": username_clean, "discord_user_id": interaction.user.id, "active": True}},
+            {"username": username_clean}, 
+            {"$set": {"username": username_clean, "discord_user_id": interaction.user.id, "active": True}}, 
             upsert=True
         )
         
-        # 2. Encendemos monitor
-        asyncio.create_task(start_monitoring(username_clean, interaction.user.id))
+        # Enviar el mensaje final
+        await interaction.followup.send(f"✅ ¡Registro Exitoso! Tu cuenta `@{username_clean}` está vinculada.")
         
-        # 3. Aviso oculto (efímero) solo para el usuario
-        await interaction.response.send_message(f"✅ ¡Registro Exitoso! Tu cuenta `@{username_clean}` está vinculada y siendo monitoreada.", ephemeral=True)
-
-        # 4. Aviso público en el canal de Staff
-        staff_channel = bot.get_channel(int(os.getenv('CHANNEL_STAFF_ID')))
-        if staff_channel:
-            await staff_channel.send(f"🆕 **Nuevo Registro:** El usuario {interaction.user.mention} acaba de registrar la cuenta de TikTok **@{username_clean}**.")
-            
     except Exception as e:
-        await interaction.response.send_message(f"❌ Error de Base de Datos al procesar el registro: {e}", ephemeral=True)
+        # SI ALGO FALLA, ESTO LO CAPTURA Y LO IMPRIME EN RENDER
+        print(f"❌ ERROR EN COMANDO /register: {e}")
+        # Intentamos avisar al usuario si es posible
+        try:
+            await interaction.followup.send("❌ Hubo un error interno al registrar. Revisa los logs.", ephemeral=True)
+        except:
+            pass
 
 # Hilo falso para que Render no moleste con los puertos
 import threading
