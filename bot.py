@@ -5,7 +5,7 @@ from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson.objectid import ObjectId
 from TikTokLive import TikTokLiveClient
-from TikTokLive.events import LiveStartEvent, LiveEndEvent
+from TikTokLive.events import ConnectEvent, DisconnectEvent
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -157,5 +157,11 @@ async def register(ctx, tiktok_username: str):
     # Encendemos el monitor en segundo plano para este creador inmediatamente
     asyncio.create_task(start_monitoring(username_clean, ctx.author.id))
     await ctx.send(f"✅ ¡Registro Exitoso! Hola {ctx.author.mention}, tu TikTok `@{username_clean}` está siendo monitoreado 24/7.")
+# Hilo falso para que Render no moleste con los puertos
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+class DummyServer(BaseHTTPRequestHandler):
+    def do_GET(self): self.send_response(200); self.end_headers(); self.wfile.write(b"Bot OK")
+threading.Thread(target=lambda: HTTPServer(('0.0.0.0', int(os.getenv('PORT', 8080))), DummyServer).serve_forever(), daemon=True).start()
 
 bot.run(os.getenv('DISCORD_TOKEN'))
