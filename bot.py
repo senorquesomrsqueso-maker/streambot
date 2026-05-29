@@ -158,11 +158,15 @@ async def start_monitoring(username, discord_user_id):
 async def on_ready():
     print(f'🤖 Bot de Streaming Líder activo como {bot.user}')
     
-    # 1. FORZAR LA SINCRONIZACIÓN DEL '/' PRIMERO
+    # 🚨 CAMBIA ESTO: Pon el ID real de tu servidor aquí (sin comillas)
+    GUILD_ID = discord.Object(id=1465461057261670636) 
+    
+    # 1. FORZAR LA SINCRONIZACIÓN DEL '/' EN TU SERVIDOR (INSTANTÁNEO)
     try:
-        print("🔄 Sincronizando comandos Slash con Discord...")
-        await bot.tree.sync()
-        print("✅ ¡Comandos '/' listos y registrados!")
+        print("🔄 Sincronizando comandos Slash específicamente en tu servidor...")
+        bot.tree.copy_global_to(guild=GUILD_ID)
+        await bot.tree.sync(guild=GUILD_ID)
+        print("✅ ¡Comandos '/' listos y registrados al instante!")
     except Exception as e:
         print(f"❌ Error crítico al sincronizar comandos: {e}")
     
