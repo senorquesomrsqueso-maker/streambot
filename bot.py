@@ -5,7 +5,7 @@ from discord.ext import commands
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson.objectid import ObjectId
 from TikTokLive import TikTokLiveClient
-from TikTokLive.types.events import LiveEndEvent, LiveStartEvent
+from TikTokLive.events import LiveStartEvent, LiveEndEvent
 from dotenv import load_dotenv
 
 load_dotenv()
