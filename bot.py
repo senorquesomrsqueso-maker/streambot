@@ -2,6 +2,7 @@ import os
 import asyncio
 import discord
 from discord.ext import commands
+from discord import app_commands
 from motor.motor_asyncio import AsyncIOMotorClient
 from bson.objectid import ObjectId
 from TikTokLive import TikTokLiveClient
@@ -98,65 +99,80 @@ class BotonDMView(discord.ui.View):
 # FASE 1: MONITOREO EN VIVO (TIKTOK)
 # ==========================================
 async def start_monitoring(username, discord_user_id):
-    """Monitorea de forma asíncrona a un creador sin congelar Discord"""
-    client = TikTokLiveClient(unique_id=username)
+    """Monitorea en bucle infinito de forma asíncrona a un creador sin congelar Discord"""
+    username_clean = username.replace("@", "").strip()
+    
+    while True:
+        streamer = await streamers_col.find_one({"username": username_clean, "active": True})
+        if not streamer:
+            break
 
-    @client.on(LiveStartEvent)
-    async def on_live_start(event: LiveStartEvent):
-        channel = bot.get_channel(int(os.getenv('CHANNEL_START_ID')))
-        if channel:
-            await channel.send(f"🔴 **¡Anuncio de Stream!** El creador <@{discord_user_id}> está EN VIVO en TikTok.\n🔗 https://tiktok.com/@{username}/live")
+        client = TikTokLiveClient(unique_id=username_clean)
 
-    @client.on(LiveEndEvent)
-    async def on_live_end(event: LiveEndEvent):
-        # Alerta en el canal de cierres
-        channel = bot.get_channel(int(os.getenv('CHANNEL_END_ID')))
-        if channel:
-            await channel.send(f"⚠️ El stream de **@{username}** ha finalizado. Estadísticas solicitadas en privado.")
-        
-        # Enviar el botón interactivo al DM del creador
+        @client.on(ConnectEvent)
+        async def on_connect(event: ConnectEvent):
+            channel = bot.get_channel(int(os.getenv('CHANNEL_START_ID')))
+            if channel:
+                await channel.send(f"🔴 **¡Anuncio de Stream!** El creador <@{discord_user_id}> está EN VIVO en TikTok.\n🔗 https://tiktok.com/@{username_clean}/live")
+
+        @client.on(DisconnectEvent)
+        async def on_disconnect(event: DisconnectEvent):
+            channel = bot.get_channel(int(os.getenv('CHANNEL_END_ID')))
+            if channel:
+                await channel.send(f"⚠️ El stream de **@{username_clean}** ha finalizado. Estadísticas solicitadas en privado.")
+            
+            try:
+                user = await bot.fetch_user(discord_user_id)
+                await user.send(
+                    f"👋 ¡Tu directo en **@{username_clean}** ha terminado! Presiona el botón de abajo para registrar tus estadísticas de hoy.",
+                    view=BotonDMView(username_clean)
+                )
+            except Exception as e:
+                print(f"No se pudo enviar DM al usuario {discord_user_id}: {e}")
+
         try:
-            user = await bot.fetch_user(discord_user_id)
-            await user.send(
-                f"👋 ¡Tu directo en **@{username}** ha terminado! Presiona el botón de abajo para registrar tus estadísticas de hoy.",
-                view=BotonDMView(username)
-            )
-        except Exception as e:
-            print(f"No se pudo enviar DM al usuario {discord_user_id}: {e}")
-
-    try:
-        await client.start()
-    except Exception as e:
-        print(f"Error en la conexión con TikTok para @{username}: {e}")
+            await client.start()
+        except Exception:
+            await asyncio.sleep(180)
 
 # ==========================================
 # EVENTOS Y COMANDOS DE INICIO
 # ==========================================
 @bot.event
 async def on_ready():
+    # Sincroniza los comandos '/' (Slash) con Discord
+    await bot.tree.sync()
     print(f'🤖 Bot de Streaming Líder activo como {bot.user}')
     
-    # PASO EXTRA PROFESIONAL: Si el bot se reinicia en Render, vuelve a activar todos los monitores guardados
     cursor = streamers_col.find({"active": True})
     async for streamer in cursor:
         asyncio.create_task(start_monitoring(streamer["username"], streamer["discord_user_id"]))
         print(f"🔄 Re-activado monitoreo automático para: @{streamer['username']}")
 
-@bot.command()
-async def register(ctx, tiktok_username: str):
-    """Permite a los creadores enlazar su cuenta de TikTok con su Discord"""
+# NUEVO COMANDO SLASH (/)
+@bot.tree.command(name="register", description="Enlaza tu cuenta de TikTok con tu usuario de Discord")
+@app_commands.describe(tiktok_username="Escribe tu nombre de usuario de TikTok (sin el @)")
+async def register(interaction: discord.Interaction, tiktok_username: str):
     username_clean = tiktok_username.replace("@", "").strip()
     
-    # Guardamos la relación Discord-ID <-> TikTok-User en la base de datos
+    # 1. Guardamos en DB
     await streamers_col.update_one(
         {"username": username_clean},
-        {"$set": {"username": username_clean, "discord_user_id": ctx.author.id, "active": True}},
+        {"$set": {"username": username_clean, "discord_user_id": interaction.user.id, "active": True}},
         upsert=True
     )
     
-    # Encendemos el monitor en segundo plano para este creador inmediatamente
-    asyncio.create_task(start_monitoring(username_clean, ctx.author.id))
-    await ctx.send(f"✅ ¡Registro Exitoso! Hola {ctx.author.mention}, tu TikTok `@{username_clean}` está siendo monitoreado 24/7.")
+    # 2. Encendemos monitor
+    asyncio.create_task(start_monitoring(username_clean, interaction.user.id))
+    
+    # 3. Aviso oculto (efímero) solo para el usuario
+    await interaction.response.send_message(f"✅ ¡Registro Exitoso! Tu cuenta `@{username_clean}` está vinculada y siendo monitoreada.", ephemeral=True)
+
+    # 4. Aviso público en el canal de Staff
+    staff_channel = bot.get_channel(int(os.getenv('CHANNEL_STAFF_ID')))
+    if staff_channel:
+        await staff_channel.send(f"🆕 **Nuevo Registro:** El usuario {interaction.user.mention} acaba de registrar la cuenta de TikTok **@{username_clean}**.")
+
 # Hilo falso para que Render no moleste con los puertos
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
