@@ -31,17 +31,23 @@ class HelperReviewView(discord.ui.View):
 
     @discord.ui.button(label="Aprobar ✅", style=discord.ButtonStyle.success)
     async def aprobar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await db.reportes.update_one({"_id": ObjectId(self.reporte_id)}, {"$set": {"estado": "aprobado"}})
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(content=f"🟢 **Reporte Aprobado por {interaction.user.mention}**", view=self)
+        try:
+            await db.reportes.update_one({"_id": ObjectId(self.reporte_id)}, {"$set": {"estado": "aprobado"}})
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(content=f"🟢 **Reporte Aprobado por {interaction.user.mention}**", view=self)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error al conectar con la base de datos: {e}", ephemeral=True)
 
     @discord.ui.button(label="Rechazar ❌", style=discord.ButtonStyle.danger)
     async def rechazar(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await db.reportes.update_one({"_id": ObjectId(self.reporte_id)}, {"$set": {"estado": "rechazado"}})
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(content=f"🔴 **Reporte Rechazado por {interaction.user.mention}**", view=self)
+        try:
+            await db.reportes.update_one({"_id": ObjectId(self.reporte_id)}, {"$set": {"estado": "rechazado"}})
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(content=f"🔴 **Reporte Rechazado por {interaction.user.mention}**", view=self)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Error al conectar con la base de datos: {e}", ephemeral=True)
 
 # ==========================================
 # FASE 2: FORMULARIO EN MENSAGE DIRECTO (MODAL)
@@ -57,34 +63,39 @@ class ReporteStatsModal(discord.ui.Modal):
     link_prueba = discord.ui.TextInput(label='Enlace de Captura (Imgur/Discord)', style=discord.TextStyle.paragraph, placeholder='Pega el link de la imagen de tus stats aquí')
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message("✅ Tus estadísticas han sido enviadas a revisión por los Helpers.", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
         
-        # Guardamos en la base de datos
-        result = await db.reportes.insert_one({
-            "usuario_discord": interaction.user.name,
-            "id_discord": interaction.user.id,
-            "tiktok": self.tiktok_username,
-            "horas": self.horas.value,
-            "vistas": self.vistas.value,
-            "donaciones": self.donaciones.value,
-            "prueba": self.link_prueba.value,
-            "estado": "pendiente"
-        })
-
-        # Enviamos el panel de control al canal secreto de los Helpers
-        helpers_channel = bot.get_channel(int(os.getenv('CHANNEL_HELPERS_ID')))
-        if helpers_channel:
-            embed = discord.Embed(title="📋 Nuevo Reporte de Stream para Verificar", color=discord.Color.purple())
-            embed.add_field(name="Creador", value=f"{interaction.user.mention} (@{self.tiktok_username})", inline=False)
-            embed.add_field(name="Horas Transmitidas", value=self.horas.value, inline=True)
-            embed.add_field(name="Audiencia Promedio", value=self.vistas.value, inline=True)
-            embed.add_field(name="Donaciones", value=self.donaciones.value or "N/A", inline=True)
-            embed.add_field(name="Enlace de Evidencia", value=self.link_prueba.value, inline=False)
+        try:
+            # Guardamos en la base de datos
+            result = await db.reportes.insert_one({
+                "usuario_discord": interaction.user.name,
+                "id_discord": interaction.user.id,
+                "tiktok": self.tiktok_username,
+                "horas": self.horas.value,
+                "vistas": self.vistas.value,
+                "donaciones": self.donaciones.value,
+                "prueba": self.link_prueba.value,
+                "estado": "pendiente"
+            })
             
-            if self.link_prueba.value.startswith("http"):
-                embed.set_image(url=self.link_prueba.value)
+            await interaction.followup.send("✅ Tus estadísticas han sido enviadas a revisión por los Helpers.", ephemeral=True)
 
-            await helpers_channel.send(embed=embed, view=HelperReviewView(str(result.inserted_id)))
+            # Enviamos el panel de control al canal secreto de los Helpers
+            helpers_channel = bot.get_channel(int(os.getenv('CHANNEL_HELPERS_ID')))
+            if helpers_channel:
+                embed = discord.Embed(title="📋 Nuevo Reporte de Stream para Verificar", color=discord.Color.purple())
+                embed.add_field(name="Creador", value=f"{interaction.user.mention} (@{self.tiktok_username})", inline=False)
+                embed.add_field(name="Horas Transmitidas", value=self.horas.value, inline=True)
+                embed.add_field(name="Audiencia Promedio", value=self.vistas.value, inline=True)
+                embed.add_field(name="Donaciones", value=self.donaciones.value or "N/A", inline=True)
+                embed.add_field(name="Enlace de Evidencia", value=self.link_prueba.value, inline=False)
+                
+                if self.link_prueba.value.startswith("http"):
+                    embed.set_image(url=self.link_prueba.value)
+
+                await helpers_channel.send(embed=embed, view=HelperReviewView(str(result.inserted_id)))
+        except Exception as e:
+            await interaction.followup.send(f"❌ No se pudo guardar el reporte. Error de Base de Datos: {e}", ephemeral=True)
 
 class BotonDMView(discord.ui.View):
     def __init__(self, tiktok_username: str):
@@ -103,9 +114,14 @@ async def start_monitoring(username, discord_user_id):
     username_clean = username.replace("@", "").strip()
     
     while True:
-        streamer = await streamers_col.find_one({"username": username_clean, "active": True})
-        if not streamer:
-            break
+        try:
+            streamer = await streamers_col.find_one({"username": username_clean, "active": True})
+            if not streamer:
+                break
+        except Exception as e:
+            print(f"⚠️ Error de conexión con la base de datos para @{username_clean}: {e}")
+            await asyncio.sleep(60)
+            continue
 
         client = TikTokLiveClient(unique_id=username_clean)
 
@@ -140,14 +156,27 @@ async def start_monitoring(username, discord_user_id):
 # ==========================================
 @bot.event
 async def on_ready():
-    # Sincroniza los comandos '/' (Slash) con Discord
-    await bot.tree.sync()
     print(f'🤖 Bot de Streaming Líder activo como {bot.user}')
     
-    cursor = streamers_col.find({"active": True})
-    async for streamer in cursor:
-        asyncio.create_task(start_monitoring(streamer["username"], streamer["discord_user_id"]))
-        print(f"🔄 Re-activado monitoreo automático para: @{streamer['username']}")
+    # 1. FORZAR LA SINCRONIZACIÓN DEL '/' PRIMERO
+    try:
+        print("🔄 Sincronizando comandos Slash con Discord...")
+        await bot.tree.sync()
+        print("✅ ¡Comandos '/' listos y registrados!")
+    except Exception as e:
+        print(f"❌ Error crítico al sincronizar comandos: {e}")
+    
+    # 2. CARGAR BASE DE DATOS PROTEGIDA CONTRA ERRORES ROJOS
+    try:
+        print("🔍 Intentando recuperar streamers desde MongoDB...")
+        cursor = streamers_col.find({"active": True})
+        async for streamer in cursor:
+            asyncio.create_task(start_monitoring(streamer["username"], streamer["discord_user_id"]))
+            print(f"🔄 Re-activado monitoreo automático para: @{streamer['username']}")
+    except Exception as e:
+        print(f"\n🔴 ALERTA MONGODB (Texto Rojo): No se pudieron cargar los monitores automáticos.")
+        print(f"Detalles del error: {e}")
+        print("⚠️ El bot seguirá funcionando en Discord, pero las funciones de la base de datos fallarán hasta arreglar el enlace de conexión.\n")
 
 # NUEVO COMANDO SLASH (/)
 @bot.tree.command(name="register", description="Enlaza tu cuenta de TikTok con tu usuario de Discord")
@@ -155,23 +184,27 @@ async def on_ready():
 async def register(interaction: discord.Interaction, tiktok_username: str):
     username_clean = tiktok_username.replace("@", "").strip()
     
-    # 1. Guardamos en DB
-    await streamers_col.update_one(
-        {"username": username_clean},
-        {"$set": {"username": username_clean, "discord_user_id": interaction.user.id, "active": True}},
-        upsert=True
-    )
-    
-    # 2. Encendemos monitor
-    asyncio.create_task(start_monitoring(username_clean, interaction.user.id))
-    
-    # 3. Aviso oculto (efímero) solo para el usuario
-    await interaction.response.send_message(f"✅ ¡Registro Exitoso! Tu cuenta `@{username_clean}` está vinculada y siendo monitoreada.", ephemeral=True)
+    try:
+        # 1. Guardamos en DB
+        await streamers_col.update_one(
+            {"username": username_clean},
+            {"$set": {"username": username_clean, "discord_user_id": interaction.user.id, "active": True}},
+            upsert=True
+        )
+        
+        # 2. Encendemos monitor
+        asyncio.create_task(start_monitoring(username_clean, interaction.user.id))
+        
+        # 3. Aviso oculto (efímero) solo para el usuario
+        await interaction.response.send_message(f"✅ ¡Registro Exitoso! Tu cuenta `@{username_clean}` está vinculada y siendo monitoreada.", ephemeral=True)
 
-    # 4. Aviso público en el canal de Staff
-    staff_channel = bot.get_channel(int(os.getenv('CHANNEL_STAFF_ID')))
-    if staff_channel:
-        await staff_channel.send(f"🆕 **Nuevo Registro:** El usuario {interaction.user.mention} acaba de registrar la cuenta de TikTok **@{username_clean}**.")
+        # 4. Aviso público en el canal de Staff
+        staff_channel = bot.get_channel(int(os.getenv('CHANNEL_STAFF_ID')))
+        if staff_channel:
+            await staff_channel.send(f"🆕 **Nuevo Registro:** El usuario {interaction.user.mention} acaba de registrar la cuenta de TikTok **@{username_clean}**.")
+            
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error de Base de Datos al procesar el registro: {e}", ephemeral=True)
 
 # Hilo falso para que Render no moleste con los puertos
 import threading
