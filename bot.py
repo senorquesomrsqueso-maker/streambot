@@ -12,6 +12,7 @@ from bson.objectid import ObjectId
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import ConnectEvent, DisconnectEvent
 from dotenv import load_dotenv
+active_streams = {}
 
 load_dotenv()
 
