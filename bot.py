@@ -4,6 +4,7 @@ import re
 import aiohttp
 import discord
 import logging
+import certifi
 from discord.ext import commands
 from discord import app_commands
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -30,7 +31,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # --- CONEXIÓN DE BASE DE DATOS ---
 try:
-    db_client = AsyncIOMotorClient(os.getenv('MONGO_URI'))
+    db_client = AsyncIOMotorClient(os.getenv('MONGO_URI'), tlsCAFile=certifi.where())
     db = db_client.bot_database
     streamers_col = db.streamers
     logger.info("✅ Conexión a MongoDB preparada.")
