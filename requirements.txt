@@ -1,4 +1,5 @@
+TikTokLive
 discord.py
 motor
 python-dotenv
-TikTokLive
+aiohttp
