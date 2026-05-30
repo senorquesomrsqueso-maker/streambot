@@ -1,6 +1,9 @@
 import os
 import asyncio
+import re
+import aiohttp
 import discord
+import logging
 from discord.ext import commands
 from discord import app_commands
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -11,15 +14,64 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ==========================================
+# SISTEMA DE LOGS PROFESIONAL (Para Render)
+# ==========================================
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("StreamBot")
+
 # --- CONFIGURACIÓN DE DISCORD ---
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # --- CONEXIÓN DE BASE DE DATOS ---
-db_client = AsyncIOMotorClient(os.getenv('MONGO_URI'))
-db = db_client.bot_database
-streamers_col = db.streamers
+try:
+    db_client = AsyncIOMotorClient(os.getenv('MONGO_URI'))
+    db = db_client.bot_database
+    streamers_col = db.streamers
+    logger.info("✅ Conexión a MongoDB preparada.")
+except Exception as e:
+    logger.error(f"❌ Error crítico al conectar a MongoDB: {e}")
+
+# ==========================================
+# MANEJADOR GLOBAL DE ERRORES (Evita que Discord diga "No responde")
+# ==========================================
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    logger.error(f"Error en el comando /{interaction.command.name}: {error}")
+    mensaje = "❌ Ocurrió un error interno. Los administradores ya han sido notificados."
+    if not interaction.response.is_done():
+        await interaction.response.send_message(mensaje, ephemeral=True)
+    else:
+        await interaction.followup.send(mensaje, ephemeral=True)
+
+# ==========================================
+# FUNCIONES DE VALIDACIÓN DE TIKTOK
+# ==========================================
+async def validate_tiktok_user(username: str):
+    """Verifica si el usuario tiene un formato válido y si la cuenta existe en TikTok."""
+    # 1. Verificar caracteres inválidos
+    if not re.match(r'^[a-zA-Z0-9_.-]{2,24}$', username):
+        return False, "El nombre de usuario contiene espacios o caracteres no permitidos."
+    
+    # 2. Verificar que el perfil exista realmente (búsqueda web)
+    url = f"https://www.tiktok.com/@{username}"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as response:
+                if response.status == 404:
+                    return False, "La cuenta no existe o está baneada (Error 404)."
+                # Si devuelve 200, la cuenta existe.
+                return True, None
+    except Exception as e:
+        logger.error(f"Error al validar en TikTok web: {e}")
+        return False, "No nos pudimos conectar con los servidores de TikTok para validar."
 
 # ==========================================
 # FASE 3 Y 4: SITEMA DE REVISIÓN PARA HELPERS
@@ -37,7 +89,7 @@ class HelperReviewView(discord.ui.View):
                 child.disabled = True
             await interaction.response.edit_message(content=f"🟢 **Reporte Aprobado por {interaction.user.mention}**", view=self)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Error al conectar con la base de datos: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Error base de datos: {e}", ephemeral=True)
 
     @discord.ui.button(label="Rechazar ❌", style=discord.ButtonStyle.danger)
     async def rechazar(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -47,7 +99,7 @@ class HelperReviewView(discord.ui.View):
                 child.disabled = True
             await interaction.response.edit_message(content=f"🔴 **Reporte Rechazado por {interaction.user.mention}**", view=self)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Error al conectar con la base de datos: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Error base de datos: {e}", ephemeral=True)
 
 # ==========================================
 # FASE 2: FORMULARIO EN MENSAGE DIRECTO (MODAL)
@@ -66,7 +118,6 @@ class ReporteStatsModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            # Guardamos en la base de datos
             result = await db.reportes.insert_one({
                 "usuario_discord": interaction.user.name,
                 "id_discord": interaction.user.id,
@@ -80,10 +131,9 @@ class ReporteStatsModal(discord.ui.Modal):
             
             await interaction.followup.send("✅ Tus estadísticas han sido enviadas a revisión por los Helpers.", ephemeral=True)
 
-            # Enviamos el panel de control al canal secreto de los Helpers
             helpers_channel = bot.get_channel(int(os.getenv('CHANNEL_HELPERS_ID')))
             if helpers_channel:
-                embed = discord.Embed(title="📋 Nuevo Reporte de Stream para Verificar", color=discord.Color.purple())
+                embed = discord.Embed(title="📋 Nuevo Reporte de Stream", color=discord.Color.purple())
                 embed.add_field(name="Creador", value=f"{interaction.user.mention} (@{self.tiktok_username})", inline=False)
                 embed.add_field(name="Horas Transmitidas", value=self.horas.value, inline=True)
                 embed.add_field(name="Audiencia Promedio", value=self.vistas.value, inline=True)
@@ -95,7 +145,8 @@ class ReporteStatsModal(discord.ui.Modal):
 
                 await helpers_channel.send(embed=embed, view=HelperReviewView(str(result.inserted_id)))
         except Exception as e:
-            await interaction.followup.send(f"❌ No se pudo guardar el reporte. Error de Base de Datos: {e}", ephemeral=True)
+            logger.error(f"Error al guardar modal: {e}")
+            await interaction.followup.send(f"❌ No se pudo guardar el reporte.", ephemeral=True)
 
 class BotonDMView(discord.ui.View):
     def __init__(self, tiktok_username: str):
@@ -110,16 +161,17 @@ class BotonDMView(discord.ui.View):
 # FASE 1: MONITOREO EN VIVO (TIKTOK)
 # ==========================================
 async def start_monitoring(username, discord_user_id):
-    """Monitorea en bucle infinito de forma asíncrona a un creador sin congelar Discord"""
     username_clean = username.replace("@", "").strip()
+    logger.info(f"Iniciando hilo de monitoreo para @{username_clean}")
     
     while True:
         try:
             streamer = await streamers_col.find_one({"username": username_clean, "active": True})
             if not streamer:
+                logger.info(f"Monitoreo desactivado para @{username_clean}, cerrando hilo.")
                 break
         except Exception as e:
-            print(f"⚠️ Error de conexión con la base de datos para @{username_clean}: {e}")
+            logger.error(f"Error DB en monitoreo para @{username_clean}: {e}")
             await asyncio.sleep(60)
             continue
 
@@ -127,88 +179,93 @@ async def start_monitoring(username, discord_user_id):
 
         @client.on(ConnectEvent)
         async def on_connect(event: ConnectEvent):
+            logger.info(f"🔴 @{username_clean} acaba de iniciar Stream!")
             channel = bot.get_channel(int(os.getenv('CHANNEL_START_ID')))
             if channel:
-                await channel.send(f"🔴 **¡Anuncio de Stream!** El creador <@{discord_user_id}> está EN VIVO en TikTok.\n🔗 https://tiktok.com/@{username_clean}/live")
+                await channel.send(f"🔴 **¡Anuncio de Stream!** <@{discord_user_id}> está EN VIVO en TikTok.\n🔗 https://tiktok.com/@{username_clean}/live")
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event: DisconnectEvent):
+            logger.info(f"⏹️ @{username_clean} terminó su Stream.")
             channel = bot.get_channel(int(os.getenv('CHANNEL_END_ID')))
             if channel:
-                await channel.send(f"⚠️ El stream de **@{username_clean}** ha finalizado. Estadísticas solicitadas en privado.")
+                await channel.send(f"⚠️ El stream de **@{username_clean}** ha finalizado.")
             
             try:
                 user = await bot.fetch_user(discord_user_id)
                 await user.send(
-                    f"👋 ¡Tu directo en **@{username_clean}** ha terminado! Presiona el botón de abajo para registrar tus estadísticas de hoy.",
+                    f"👋 ¡Tu directo en **@{username_clean}** ha terminado! Registra tus estadísticas abajo.",
                     view=BotonDMView(username_clean)
                 )
             except Exception as e:
-                print(f"No se pudo enviar DM al usuario {discord_user_id}: {e}")
+                logger.error(f"No se pudo enviar DM a {discord_user_id}: {e}")
 
         try:
             await client.start()
-        except Exception:
-            await asyncio.sleep(180)
+        except Exception as e:
+            # Silenciamos errores menores de conexión para no saturar los logs
+            await asyncio.sleep(120)
 
 # ==========================================
-# EVENTOS Y COMANDOS DE INICIO
+# EVENTOS Y COMANDOS PRINCIPALES
 # ==========================================
 @bot.event
 async def on_ready():
-    print(f'🤖 Bot de Streaming Líder activo como {bot.user}')
+    logger.info(f'🤖 Bot activo y logueado como {bot.user}')
     
-    # 🚨 CAMBIA ESTO: Pon el ID real de tu servidor aquí (sin comillas)
+    # Sincronización en tu servidor
     GUILD_ID = discord.Object(id=1465461057261670636) 
     
-    # 1. FORZAR LA SINCRONIZACIÓN DEL '/' EN TU SERVIDOR (INSTANTÁNEO)
     try:
-        print("🔄 Sincronizando comandos Slash específicamente en tu servidor...")
+        logger.info("🔄 Sincronizando comandos Slash...")
         bot.tree.copy_global_to(guild=GUILD_ID)
         await bot.tree.sync(guild=GUILD_ID)
-        print("✅ ¡Comandos '/' listos y registrados al instante!")
+        logger.info("✅ ¡Comandos registrados!")
     except Exception as e:
-        print(f"❌ Error crítico al sincronizar comandos: {e}")
+        logger.error(f"❌ Error al sincronizar comandos: {e}")
     
-    # 2. CARGAR BASE DE DATOS PROTEGIDA CONTRA ERRORES ROJOS
+    # Cargar Base de Datos
     try:
-        print("🔍 Intentando recuperar streamers desde MongoDB...")
+        logger.info("🔍 Recuperando streamers activos de la base de datos...")
         cursor = streamers_col.find({"active": True})
         async for streamer in cursor:
             asyncio.create_task(start_monitoring(streamer["username"], streamer["discord_user_id"]))
-            print(f"🔄 Re-activado monitoreo automático para: @{streamer['username']}")
     except Exception as e:
-        print(f"\n🔴 ALERTA MONGODB (Texto Rojo): No se pudieron cargar los monitores automáticos.")
-        print(f"Detalles del error: {e}")
-        print("⚠️ El bot seguirá funcionando en Discord, pero las funciones de la base de datos fallarán hasta arreglar el enlace de conexión.\n")
+        logger.error(f"🔴 MONGODB ERROR: No se cargaron los monitores. Detalles: {e}")
 
-@bot.tree.command(name="register", description="Enlaza tu cuenta de TikTok")
+@bot.tree.command(name="register", description="Verifica y enlaza tu cuenta de TikTok al bot")
 async def register(interaction: discord.Interaction, tiktok_username: str):
+    # 1. Pone al bot a "pensar" para que Discord no lance error de tiempo
+    await interaction.response.defer(ephemeral=True) 
+    
+    username_clean = tiktok_username.replace("@", "").strip()
+    logger.info(f"Usuario {interaction.user.name} solicitó registro para @{username_clean}")
+    
+    # 2. VALIDACIÓN ESTRICTA
+    es_valido, razon_error = await validate_tiktok_user(username_clean)
+    
+    if not es_valido:
+        logger.warning(f"Validación fallida para @{username_clean} - Razón: {razon_error}")
+        await interaction.followup.send(f"⚠️ **No pudimos registrar tu cuenta.**\n**Razón:** `{razon_error}`\nAsegúrate de escribir bien tu usuario, sin la '@'.", ephemeral=True)
+        return
+
+    # 3. SI EXISTE, GUARDAR EN LA BASE DE DATOS
     try:
-        # Aquí va tu lógica actual
-        username_clean = tiktok_username.replace("@", "").strip()
-        
-        # FORZAMOS UNA RESPUESTA INMEDIATA (Para que Discord no marque timeout)
-        await interaction.response.defer(ephemeral=True) 
-        
-        # Tu lógica de base de datos
         await streamers_col.update_one(
             {"username": username_clean}, 
             {"$set": {"username": username_clean, "discord_user_id": interaction.user.id, "active": True}}, 
             upsert=True
         )
         
-        # Enviar el mensaje final
-        await interaction.followup.send(f"✅ ¡Registro Exitoso! Tu cuenta `@{username_clean}` está vinculada.")
+        # 4. INICIAR MONITOREO DE INMEDIATO
+        asyncio.create_task(start_monitoring(username_clean, interaction.user.id))
+        
+        logger.info(f"✅ Registro exitoso para @{username_clean}")
+        await interaction.followup.send(f"✅ **¡Perfil Verificado y Registrado!**\nTu cuenta `@{username_clean}` ha sido enlazada a tu perfil de Discord y ya estamos monitoreando tus directos.", ephemeral=True)
         
     except Exception as e:
-        # SI ALGO FALLA, ESTO LO CAPTURA Y LO IMPRIME EN RENDER
-        print(f"❌ ERROR EN COMANDO /register: {e}")
-        # Intentamos avisar al usuario si es posible
-        try:
-            await interaction.followup.send("❌ Hubo un error interno al registrar. Revisa los logs.", ephemeral=True)
-        except:
-            pass
+        logger.error(f"Error al guardar registro en BD: {e}")
+        await interaction.followup.send("❌ Tu perfil de TikTok es válido, pero hubo un error en nuestra base de datos. Avisa a los administradores.", ephemeral=True)
 
 # Hilo falso para que Render no moleste con los puertos
 import threading
