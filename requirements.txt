@@ -3,3 +3,4 @@ discord.py
 motor
 python-dotenv
 aiohttp
+certifi
