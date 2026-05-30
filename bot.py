@@ -37,6 +37,7 @@ try:
     logger.info("✅ Conexión a MongoDB preparada.")
 except Exception as e:
     logger.error(f"❌ Error crítico al conectar a MongoDB: {e}")
+    active_streams = {}
 
 # ==========================================
 # MANEJADOR GLOBAL DE ERRORES (Evita que Discord diga "No responde")
@@ -180,18 +181,34 @@ async def start_monitoring(username, discord_user_id):
 
         @client.on(ConnectEvent)
         async def on_connect(event: ConnectEvent):
+            # EL CANDADO: Si ya registramos que está en vivo, ignoramos señales repetidas
+            if active_streams.get(username_clean):
+                return
+
+            # Es un stream NUEVO. Cerramos el candado y avisamos 1 SOLA VEZ.
+            active_streams[username_clean] = True
             logger.info(f"🔴 @{username_clean} acaba de iniciar Stream!")
+            
             channel = bot.get_channel(int(os.getenv('CHANNEL_START_ID')))
             if channel:
                 await channel.send(f"🔴 **¡Anuncio de Stream!** <@{discord_user_id}> está EN VIVO en TikTok.\n🔗 https://tiktok.com/@{username_clean}/live")
 
         @client.on(DisconnectEvent)
         async def on_disconnect(event: DisconnectEvent):
-            logger.info(f"⏹️ @{username_clean} terminó su Stream.")
+            # Si se desconecta pero el candado ya estaba abierto (ya se avisó), lo ignoramos
+            if not active_streams.get(username_clean):
+                return
+
+            # Abrimos el candado para poder avisar en el próximo stream
+            active_streams[username_clean] = False
+            logger.info(f"⏹️ @{username_clean} terminó su Stream oficialmente.")
+            
+            # Avisar 1 SOLA VEZ al canal de que terminó de inmediato
             channel = bot.get_channel(int(os.getenv('CHANNEL_END_ID')))
             if channel:
                 await channel.send(f"⚠️ El stream de **@{username_clean}** ha finalizado.")
             
+            # MANDAR EL MD Y FORMULARIO 1 SOLA VEZ al instante
             try:
                 user = await bot.fetch_user(discord_user_id)
                 await user.send(
