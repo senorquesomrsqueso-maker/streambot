@@ -308,7 +308,17 @@ async def on_ready():
 async def register(interaction: discord.Interaction, tiktok_input: str):
     await interaction.response.defer(ephemeral=True) 
     
-    # Aquí funciona la nueva magia para limpiar el link o el arroba
+    # 1. VERIFICAR SI ES STAFF
+    es_staff = interaction.permissions.manage_messages
+    
+    # 2. LÍMITE DE UN SOLO REGISTRO PARA USUARIOS NORMALES
+    if not es_staff:
+        usuario_existente = await streamers_col.find_one({"discord_user_id": interaction.user.id})
+        if usuario_existente:
+            await interaction.followup.send(f"⚠️ **Ya estás registrado.** Solo puedes vincular una cuenta de TikTok (`@{usuario_existente['username']}`). Si necesitas cambiarla, contacta al Staff.", ephemeral=True)
+            return
+
+    # Limpiamos el link o el arroba
     username_clean = extraer_usuario_tiktok(tiktok_input)
     
     es_valido, razon_error = await validate_tiktok_user(username_clean)
@@ -324,7 +334,23 @@ async def register(interaction: discord.Interaction, tiktok_input: str):
         )
         asyncio.create_task(start_monitoring(username_clean, interaction.user.id))
         await interaction.followup.send(f"✅ **¡Registrado!**\nYa estamos monitoreando a `@{username_clean}`.", ephemeral=True)
+
+        # 3. ENVIAR REPORTE AL CANAL PRIVADO DEL STAFF
+        log_channel_id = os.getenv('CHANNEL_LOG_REGISTER_ID')
+        if log_channel_id:
+            log_channel = bot.get_channel(int(log_channel_id))
+            if log_channel:
+                embed = discord.Embed(title="🆕 Nuevo Creador Registrado", color=discord.Color.green())
+                embed.add_field(name="Usuario de Discord", value=interaction.user.mention, inline=False)
+                embed.add_field(name="Cuenta de TikTok", value=f"🔗 [@{username_clean}](https://www.tiktok.com/@{username_clean})", inline=False)
+                
+                if es_staff:
+                    embed.set_footer(text="⚙️ Registrado manualmente por un miembro del Staff")
+                
+                await log_channel.send(embed=embed)
+
     except Exception as e:
+        logger.error(f"Error guardando en BD al registrar: {e}")
         await interaction.followup.send("❌ Hubo un error en nuestra base de datos.", ephemeral=True)
 
 # --- COMANDOS PARA LEADERBOARDS (STAFF) ---
